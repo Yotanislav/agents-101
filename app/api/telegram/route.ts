@@ -18,6 +18,8 @@ type StoredMessage = {
 
 const TELEGRAM_MESSAGE_MAX_LENGTH = 4096;
 const MAX_HISTORY_MESSAGES = 20;
+const RETRY_FRIENDLY_MESSAGE =
+  'Dame un momento, estoy procesando tu mensaje. Vuelve a escribirme en unos segundos 🙏';
 
 function createRedis(): Redis | null {
   if (!process.env.KV_REST_API_URL || !process.env.KV_REST_API_TOKEN) {
@@ -49,6 +51,25 @@ async function saveHistory(
   await redis.set(chatKey(chatId), trimHistory(messages));
 }
 
+async function sendChatAction(
+  chatId: number,
+  token: string,
+  action: 'typing' = 'typing',
+): Promise<void> {
+  const response = await fetch(
+    `https://api.telegram.org/bot${token}/sendChatAction`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, action }),
+    },
+  );
+
+  if (!response.ok) {
+    console.error('Telegram sendChatAction failed:', response.status, await response.text());
+  }
+}
+
 async function sendTelegramMessage(
   chatId: number,
   text: string,
@@ -68,11 +89,44 @@ async function sendTelegramMessage(
   }
 }
 
-export async function POST(req: Request) {
-  let chatId: number | undefined;
+async function generateAgentReply(messages: ModelMessage[]): Promise<string> {
+  const attempt = async (): Promise<string> => {
+    const result = streamText({
+      model,
+      system: DEFAULT_SYSTEM_PROMPT,
+      messages,
+      tools: agentTools,
+      stopWhen: stepCountIs(10),
+    });
+
+    const reply = await result.text;
+    if (!reply) {
+      throw new Error('Empty agent response');
+    }
+
+    return reply;
+  };
 
   try {
-    const token = process.env.TELEGRAM_BOT_TOKEN;
+    return await attempt();
+  } catch (firstError) {
+    console.error('streamText failed, retrying once:', firstError);
+    return await attempt();
+  }
+}
+
+function truncateForTelegram(text: string): string {
+  return text.length > TELEGRAM_MESSAGE_MAX_LENGTH
+    ? `${text.slice(0, TELEGRAM_MESSAGE_MAX_LENGTH - 3)}...`
+    : text;
+}
+
+export async function POST(req: Request) {
+  let chatId: number | undefined;
+  let token: string | undefined;
+
+  try {
+    token = process.env.TELEGRAM_BOT_TOKEN;
     if (!token) {
       console.error('TELEGRAM_BOT_TOKEN is not set');
       return new Response('OK', { status: 200 });
@@ -86,6 +140,8 @@ export async function POST(req: Request) {
       return new Response('OK', { status: 200 });
     }
 
+    await sendChatAction(chatId, token, 'typing');
+
     const redis = createRedis();
     const history = redis ? await loadHistory(redis, chatId) : [];
     const messages: ModelMessage[] = [
@@ -93,19 +149,8 @@ export async function POST(req: Request) {
       { role: 'user', content: text },
     ];
 
-    const result = streamText({
-      model,
-      system: DEFAULT_SYSTEM_PROMPT,
-      messages,
-      tools: agentTools,
-      stopWhen: stepCountIs(10),
-    });
-
-    const reply = (await result.text) || 'No pude generar una respuesta.';
-    const message =
-      reply.length > TELEGRAM_MESSAGE_MAX_LENGTH
-        ? `${reply.slice(0, TELEGRAM_MESSAGE_MAX_LENGTH - 3)}...`
-        : reply;
+    const reply = await generateAgentReply(messages);
+    const message = truncateForTelegram(reply);
 
     if (redis) {
       const updatedHistory: StoredMessage[] = [
@@ -120,14 +165,9 @@ export async function POST(req: Request) {
   } catch (error) {
     console.error('Telegram webhook error:', error);
 
-    const token = process.env.TELEGRAM_BOT_TOKEN;
     if (token && chatId) {
       try {
-        await sendTelegramMessage(
-          chatId,
-          'Ocurrió un error al procesar tu mensaje. Inténtalo de nuevo más tarde.',
-          token,
-        );
+        await sendTelegramMessage(chatId, RETRY_FRIENDLY_MESSAGE, token);
       } catch {
         // Ignore secondary delivery failures; Telegram still gets 200.
       }
