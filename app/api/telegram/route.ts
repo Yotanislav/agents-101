@@ -1,4 +1,5 @@
-import { stepCountIs, streamText } from 'ai';
+import { Redis } from '@upstash/redis';
+import { stepCountIs, streamText, type ModelMessage } from 'ai';
 import { agentTools, DEFAULT_SYSTEM_PROMPT, model } from '../chat/agent';
 
 export const maxDuration = 30;
@@ -10,7 +11,57 @@ type TelegramUpdate = {
   };
 };
 
+type StoredMessage = {
+  role: 'user' | 'assistant';
+  content: string;
+};
+
 const TELEGRAM_MESSAGE_MAX_LENGTH = 4096;
+const MAX_HISTORY_MESSAGES = 20;
+
+function createRedis(): Redis | null {
+  const url =
+    process.env.STORAGE_URL ??
+    process.env.KV_URL ??
+    process.env.UPSTASH_REDIS_REST_URL ??
+    process.env.KV_REST_API_URL;
+  const token =
+    process.env.STORAGE_TOKEN ??
+    process.env.KV_TOKEN ??
+    process.env.UPSTASH_REDIS_REST_TOKEN ??
+    process.env.KV_REST_API_TOKEN;
+
+  if (url && token) {
+    return new Redis({ url, token });
+  }
+
+  try {
+    return Redis.fromEnv();
+  } catch {
+    return null;
+  }
+}
+
+function chatKey(chatId: number): string {
+  return `chat:${chatId}`;
+}
+
+function trimHistory(messages: StoredMessage[]): StoredMessage[] {
+  return messages.slice(-MAX_HISTORY_MESSAGES);
+}
+
+async function loadHistory(redis: Redis, chatId: number): Promise<StoredMessage[]> {
+  const stored = await redis.get<StoredMessage[]>(chatKey(chatId));
+  return Array.isArray(stored) ? stored : [];
+}
+
+async function saveHistory(
+  redis: Redis,
+  chatId: number,
+  messages: StoredMessage[],
+): Promise<void> {
+  await redis.set(chatKey(chatId), trimHistory(messages));
+}
 
 async function sendTelegramMessage(
   chatId: number,
@@ -49,10 +100,17 @@ export async function POST(req: Request) {
       return new Response('OK', { status: 200 });
     }
 
+    const redis = createRedis();
+    const history = redis ? await loadHistory(redis, chatId) : [];
+    const messages: ModelMessage[] = [
+      ...history.map(m => ({ role: m.role, content: m.content })),
+      { role: 'user', content: text },
+    ];
+
     const result = streamText({
       model,
       system: DEFAULT_SYSTEM_PROMPT,
-      messages: [{ role: 'user', content: text }],
+      messages,
       tools: agentTools,
       stopWhen: stepCountIs(10),
     });
@@ -62,6 +120,15 @@ export async function POST(req: Request) {
       reply.length > TELEGRAM_MESSAGE_MAX_LENGTH
         ? `${reply.slice(0, TELEGRAM_MESSAGE_MAX_LENGTH - 3)}...`
         : reply;
+
+    if (redis) {
+      const updatedHistory: StoredMessage[] = [
+        ...history,
+        { role: 'user', content: text },
+        { role: 'assistant', content: reply },
+      ];
+      await saveHistory(redis, chatId, updatedHistory);
+    }
 
     await sendTelegramMessage(chatId, message, token);
   } catch (error) {
