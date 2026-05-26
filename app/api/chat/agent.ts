@@ -9,7 +9,7 @@ export { DEFAULT_SYSTEM_PROMPT };
 
 const google = createGoogleGenerativeAI();
 
-export const model = google('gemini-2.5-flash');
+export const model = google('gemini-2.0-flash-exp');
 
 export const agentTools = {
   research_docs: {

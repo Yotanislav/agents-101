@@ -1,8 +1,8 @@
+export const maxDuration = 60;
+
 import { Redis } from '@upstash/redis';
 import { stepCountIs, streamText, type ModelMessage } from 'ai';
 import { agentTools, DEFAULT_SYSTEM_PROMPT, model } from '../chat/agent';
-
-export const maxDuration = 30;
 
 type TelegramUpdate = {
   message?: {
