@@ -248,7 +248,7 @@ export default function Home() {
               className="w-full resize-y rounded-lg border border-foreground/20 bg-foreground/5 px-3 py-2 font-mono text-xs focus:outline-none focus-visible:ring-2 focus-visible:ring-foreground/40"
             />
             <p className="text-xs text-foreground/40">
-              Los cambios aplican al próximo mensaje. Usa "Nueva conversación" para reiniciar.
+              Los cambios aplican al próximo mensaje. Usa &quot;Nueva conversación&quot; para reiniciar.
             </p>
           </div>
         )}
