@@ -20,26 +20,12 @@ const TELEGRAM_MESSAGE_MAX_LENGTH = 4096;
 const MAX_HISTORY_MESSAGES = 20;
 
 function createRedis(): Redis | null {
-  const url =
-    process.env.STORAGE_URL ??
-    process.env.KV_URL ??
-    process.env.UPSTASH_REDIS_REST_URL ??
-    process.env.KV_REST_API_URL;
-  const token =
-    process.env.STORAGE_TOKEN ??
-    process.env.KV_TOKEN ??
-    process.env.UPSTASH_REDIS_REST_TOKEN ??
-    process.env.KV_REST_API_TOKEN;
-
-  if (url && token) {
-    return new Redis({ url, token });
-  }
-
-  try {
-    return Redis.fromEnv();
-  } catch {
+  if (!process.env.KV_REST_API_URL || !process.env.KV_REST_API_TOKEN) {
+    console.warn('[Telegram] KV_REST_API_URL or KV_REST_API_TOKEN is not set');
     return null;
   }
+
+  return Redis.fromEnv();
 }
 
 function chatKey(chatId: number): string {
